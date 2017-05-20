@@ -1,11 +1,6 @@
-#include <Adafruit_CircuitPlayground.h>
-#include <TEA5767.h>
-#include <SI4705.h>
-#include <SI4703.h>
-#include <RDSParser.h>
-#include <RDA5807M.h>
-#include <radio.h>
-#include <newchip.h>
+
+
+#include "SparkFunSi4703.h"
 #include <Adafruit_TPA2016.h>
 #include <EEPROM.h>
 #include <Ticker.h>
@@ -37,30 +32,42 @@ WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org", -4 * 60 * 60, 60000);
 Adafruit_7segment clockDisplay = Adafruit_7segment();
 Adafruit_MPR121 cap = Adafruit_MPR121();
-
 Adafruit_TPA2016 audioamp = Adafruit_TPA2016();
 
-bool toggle;
 uint16_t lasttouched = 0;
 uint16_t currtouched = 0;
 
+int lastHourTimeChecked = 0;
 int indicators = 0x02;
+int brightness = 10;
+bool displayUpdated = false;
+bool displayNeedsUpdated = false;
 
 int minutes = 0;
 int hours = 0;
 int seconds = 0;
-unsigned long count;
-unsigned long next;
-bool updated = false;
+
+
+
+int channel;
+int volume;
+Si4703_Breakout radio(2, 4, 5);
+//Si4703_Breakout radio(2, 13, 12);
+
 void setup()
 {
+  Serial.println("Starting Up");
+  
   WiFiManager wifiManager;
   wifiManager.autoConnect("PenguinClock");
   Serial.println("Wifi Connected.");
+  
+  radio.powerOn();
+  Serial.println("Radio Powered On");
+  delay(200);
 
-  Serial.println("Starting up...");
-  //pinMode(0, OUTPUT);
-
+  scani2c();
+  
   bool capon = false;
   capon = cap.begin(CAP_ADDRESS);
   Serial.print("Cap Sensor: ");
@@ -68,31 +75,79 @@ void setup()
 
   clockDisplay.begin(DISPLAY_ADDRESS);
   timeClient.begin();
-  updateTime();
+  updateTime(true);
   
   //testdisplay();
+ 
   //testamp();
-  //scani2c();
 
-  updateDisplay();
+  audioamp.begin();
+  Serial.println("Amp turned on");
+  audioamp.setGain(8);
+  audioamp.enableChannel(true, true);
+
+  testradio();
+ // updateDisplay();
 
   ticker.attach(1, tick);
-
 }
 
-void updateTime()
+void testradio()
 {
+  //radio.powerOn();
+  volume = 7;
+  radio.setVolume(volume);
+  channel = 961; // WMTR
+  radio.setChannel(channel);
+  displayInfo();
+  /*for (int i = 0; i < 8; i++)
+  {
+    delay(4000);
+    channel = radio.seekUp();
+    delay(100);
+    displayInfo();
+  }
+  channel = 961;
+  radio.setChannel(channel);*/
+  
+  //showRDS();
+}
+
+void displayInfo()
+{
+  Serial.print("Channel:"); Serial.print(channel);
+  Serial.print(" Volume:"); Serial.println(volume);
+}
+char rdsBuffer[10];
+void showRDS()
+{
+  Serial.println("RDS listening");
+  radio.readRDS(rdsBuffer, 15000);
+  Serial.print("RDS heard:");
+  Serial.println(rdsBuffer);
+}
+
+void updateTime(bool force)
+{
+  if (!force && lastHourTimeChecked == hours)
+  {
+    return;
+  }
+
+  lastHourTimeChecked = hours;
   timeClient.update();
   seconds = timeClient.getSeconds(); 
   hours = timeClient.getHours();
   minutes = timeClient.getMinutes();
-  Serial.printf("Updated to: %d:%d:%d\n", hours, minutes, seconds);
+  Serial.printf("Updated to: %d:%2d:%2d\n", hours, minutes, seconds);
 }
 
 void tick(void) 
 {
   seconds++;
-  if (seconds > 59) {
+  if (seconds > 59) 
+  {
+    displayNeedsUpdated = true;
     seconds = 0;
     minutes += 1;
     if (minutes > 59) 
@@ -105,12 +160,12 @@ void tick(void)
       }
     }
   }
-  updated = false;
-  Serial.printf("tick %d:%d:%d\n", hours, minutes, seconds);
+  //Serial.printf("tick %d:%d:%d\n", hours, minutes, seconds);
 }
 
 void updateDisplay()
 {
+  displayNeedsUpdated = false;
   int indicators = indicators | 0x02; //make sure colon is on.
 
   int displayValue = hours * 100 + minutes;
@@ -136,9 +191,9 @@ void updateDisplay()
   clockDisplay.print(displayValue, DEC); 
   clockDisplay.writeDigitRaw(2, indicators);
   clockDisplay.writeDisplay();
-
-  Serial.printf("Display: %3d\n", displayValue);
-  updated = true;
+  clockDisplay.setBrightness(brightness);
+  Serial.printf("Display: %3d\t%2d\n", displayValue,brightness);
+  
 }
 
 void loop()
@@ -146,31 +201,88 @@ void loop()
   //get the time from NTP every hour
   if (minutes == 0)
   {
-    updateTime();
+    updateTime(false);
   }
   
-  //update the display every minute;
-  if (seconds == 0 && !updated)
+  //update the display when needed;
+  if (displayNeedsUpdated)
   {
     updateDisplay();
   }
 
-  currtouched = cap.touched();
-
-  for (uint8_t i = 0; i<12; i++) {
-    // it if *is* touched and *wasnt* touched before, alert!
-    if ((currtouched & _BV(i)) && !(lasttouched & _BV(i))) {
-      Serial.print(i); Serial.println(" touched");
-    }
-    // if it *was* touched and now *isnt*, alert!
-    if (!(currtouched & _BV(i)) && (lasttouched & _BV(i))) {
-      Serial.print(i); Serial.println(" released");
-    }
-  }
+  checkButtons();
 
 }
 
 
+#define MODE_BRIGHTNESS 9
+#define BUTTON_PLUS 10
+#define BUTTON_MINUS 11
+
+void checkButtons()
+{
+  currtouched = cap.touched();
+
+  if (currtouched & _BV(MODE_BRIGHTNESS))
+  {
+    if ((currtouched & _BV(BUTTON_PLUS)) && !(lasttouched & _BV(BUTTON_PLUS)))
+    {
+      increaseBrightness();
+    }
+    if ((currtouched & _BV(BUTTON_MINUS)) && !(lasttouched & _BV(BUTTON_MINUS)))
+    {
+      decreaseBrightness();
+    }
+  }
+  
+
+  //for (uint8_t i = 0; i<12; i++) {
+  //  // it if *is* touched and *wasnt* touched before, alert!
+  //  if ((currtouched & _BV(i)) && !(lasttouched & _BV(i))) {
+  //    //Serial.print(i); Serial.println(" touched");
+  //    handleButton(i, true);
+  //  }
+  //  // if it *was* touched and now *isnt*, alert!
+  //  if (!(currtouched & _BV(i)) && (lasttouched & _BV(i))) {
+  //    handleButton(i, false);
+  //    //Serial.print(i); Serial.println(" released");
+  //  }
+  //}
+
+  lasttouched = currtouched;
+}
+
+
+void increaseBrightness()
+{
+  Serial.println("Button 11 Touched");
+  brightness++;
+  if (brightness > 15) { brightness = 15; }
+  clockDisplay.setBrightness(brightness);
+  displayNeedsUpdated = true;
+}
+
+void decreaseBrightness()
+{
+  Serial.println("Button 10 Touched");
+  brightness--;
+  if (brightness < 0) { brightness = 0; }
+  clockDisplay.setBrightness(brightness);
+  displayNeedsUpdated = true;
+}
+
+void handleButton(int button, bool state)
+{
+  if (state)
+  {
+   
+  }
+  else
+  {
+
+  }
+
+}
 
 
 

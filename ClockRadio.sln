@@ -19,6 +19,14 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ESP8266WiFi", "..\hardware\
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Wire", "..\hardware\esp8266com\esp8266\libraries\Wire\Wire.vcxitems", "{C6006662-4C51-436E-9661-2C48CD18A4C4}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Ticker", "..\hardware\esp8266com\esp8266\libraries\Ticker\Ticker.vcxitems", "{64ACC3E3-795B-40D9-86BF-32F76559EBC6}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "EEPROM", "..\hardware\esp8266com\esp8266\libraries\EEPROM\EEPROM.vcxitems", "{0C65AB04-5679-4422-83E8-F1A3FDB19F0B}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Adafruit_TPA2016_Library", "..\libraries\Adafruit_TPA2016_Library\Adafruit_TPA2016_Library.vcxitems", "{6CBD0286-7402-4E30-B22F-449B068C25A6}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Radio", "..\libraries\Radio\Radio.vcxitems", "{848A3B23-2058-4931-8AA6-DD1C04FBC33A}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x86 = Debug|x86
