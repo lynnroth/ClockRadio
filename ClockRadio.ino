@@ -1,5 +1,6 @@
-
-
+#include "EEPROMAnything.h"
+//#include <Adafruit_ESP8266.h>
+#include "Radio.h"
 #include "SparkFunSi4703.h"
 #include <Adafruit_TPA2016.h>
 #include <EEPROM.h>
@@ -22,6 +23,10 @@
 #include <gfxfont.h>
 #include <Adafruit_GFX.h>
 #include <Wire.h>
+#include "EEPROMAnything.h"
+
+#define CURRENT_VERSION 3
+
 
 #define DISPLAY_ADDRESS 0x70
 #define CAP_ADDRESS 0x5A
@@ -29,42 +34,63 @@
 
 Ticker ticker;
 WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "pool.ntp.org", -4 * 60 * 60, 60000);
+NTPClient timeClient(ntpUDP, "pool.ntp.org", 0, 60000);
 Adafruit_7segment clockDisplay = Adafruit_7segment();
 Adafruit_MPR121 cap = Adafruit_MPR121();
 Adafruit_TPA2016 audioamp = Adafruit_TPA2016();
+Si4703_Breakout radio(2, 4, 5);
 
 uint16_t lasttouched = 0;
 uint16_t currtouched = 0;
 
 int lastHourTimeChecked = 0;
-int indicators = 0x02;
-int brightness = 10;
+int display_indicators = 0x02;
 bool displayUpdated = false;
 bool displayNeedsUpdated = false;
 
-int minutes = 0;
-int hours = 0;
-int seconds = 0;
+int time_minutes = 0;
+int time_hours = 0;
+int time_seconds = 0;
 
+bool alarm1_state = false;
+bool alarm2_state = false;
 
+struct context_t
+{
+  int snooze_time = -1;
+  bool alarm_tripped = false;
 
-int channel;
-int volume;
-Si4703_Breakout radio(2, 4, 5);
-//Si4703_Breakout radio(2, 13, 12);
+} context;
+
+struct configuration_t
+{
+  byte initialized;
+  int version;
+  int display_brightness;
+  int amp_volume;
+  int radio_volume;
+  int radio_channel;
+  int alarm1_hours;
+  int alarm1_minutes;
+  int alarm2_hours;
+  int alarm2_minutes;
+  int alarm1_on;
+  int alarm2_on;
+  int time_offset;
+} config;
+bool config_changed = 0;
 
 void setup()
 {
+  //initalize config;
   Serial.println("Starting Up");
-  
+
   WiFiManager wifiManager;
   wifiManager.autoConnect("PenguinClock");
   Serial.println("Wifi Connected.");
-  
   radio.powerOn();
   Serial.println("Radio Powered On");
-  delay(200);
+  delay(100);
 
   scani2c();
   
@@ -75,92 +101,162 @@ void setup()
 
   clockDisplay.begin(DISPLAY_ADDRESS);
   timeClient.begin();
-  updateTime(true);
   
-  //testdisplay();
- 
-  //testamp();
-
-  audioamp.begin();
-  Serial.println("Amp turned on");
-  audioamp.setGain(8);
-  audioamp.enableChannel(true, true);
-
-  testradio();
- // updateDisplay();
-
+  config_load();
+  
   ticker.attach(1, tick);
+
+  updateTime(true);
+  updateDisplay();
+  radio_setup();
+  Serial.println("Radio Setup Complete");
+  amp_setup();
+  Serial.println("Amp Setup Complete");
+  
 }
 
-void testradio()
+void amp_TurnOn()
+{
+  Serial.println("Amp turned on");
+  audioamp.enableChannel(true, true);
+}
+
+void amp_TurnOff()
+{
+  Serial.println("Amp turned off");
+  audioamp.enableChannel(false, false);
+}
+
+
+void config_load()
+{
+  Serial.println("Loading EEPROM settings.");
+  EEPROM.begin(4096);
+  EEPROM_readAnything(0, config);
+  if (config.initialized == 0 || config.version != CURRENT_VERSION)
+  {
+    Serial.println("EEPROM settings not initializing, setting default values.");
+    config.initialized = 1;
+    config.version = CURRENT_VERSION;
+    config.display_brightness = 2;
+    config.alarm1_hours = 5;
+    config.alarm1_hours = 5;
+    config.alarm1_minutes = 30;
+    config.alarm2_hours = 7;
+    config.alarm2_minutes = 0;
+    config.radio_channel = 961;
+    config.radio_volume = 7;
+    config.amp_volume = 6;
+    config.time_offset = 4;
+    config_save();
+  }
+
+  //Testing
+  config.alarm1_hours = 15;
+  config.alarm1_minutes = 32;
+
+  // /Testing
+  displayInfo();
+}
+
+void config_save()
+{
+  Serial.println("Saving EEPROM settings.");
+  EEPROM_writeAnything(0, config);
+  EEPROM.commit();
+  config_changed = false;
+}
+
+void radio_setup()
 {
   //radio.powerOn();
-  volume = 7;
-  radio.setVolume(volume);
-  channel = 961; // WMTR
-  radio.setChannel(channel);
+  radio.setVolume(config.radio_volume);
+  radio.setChannel(config.radio_channel);
   displayInfo();
-  /*for (int i = 0; i < 8; i++)
-  {
-    delay(4000);
-    channel = radio.seekUp();
-    delay(100);
-    displayInfo();
-  }
-  channel = 961;
-  radio.setChannel(channel);*/
-  
-  //showRDS();
+}
+
+void amp_setup()
+{
+  audioamp.begin();
+  Serial.println("Amp Begin Complete");
+  delay(50);
+
+  audioamp.setGain(config.amp_volume);
+  Serial.println("Amp Set Gain Complete");
+  //audioamp.enableChannel(true, true);
+  //amp_TurnOn();
+  amp_TurnOff();
 }
 
 void displayInfo()
 {
-  Serial.print("Channel:"); Serial.print(channel);
-  Serial.print(" Volume:"); Serial.println(volume);
-}
-char rdsBuffer[10];
-void showRDS()
-{
-  Serial.println("RDS listening");
-  radio.readRDS(rdsBuffer, 15000);
-  Serial.print("RDS heard:");
-  Serial.println(rdsBuffer);
+  Serial.printf("Channel: %d Volume: %d Amp: %d", config.radio_channel, config.radio_volume, config.amp_volume);
+  Serial.printf("\tAlarm1: %2d:%2d Alarm2: %2d:%2d", config.alarm1_hours, config.alarm1_minutes, config.alarm2_hours, config.alarm2_minutes);
+  Serial.printf("\tTimeOffset: %d", config.time_offset);
+  Serial.printf("\tDisplayBrightness: %2d\n", config.display_brightness);
 }
 
 void updateTime(bool force)
 {
-  if (!force && lastHourTimeChecked == hours)
+  if (!force && lastHourTimeChecked == time_hours)
   {
     return;
   }
 
-  lastHourTimeChecked = hours;
+  lastHourTimeChecked = time_hours;
+  timeClient.setTimeOffset(-config.time_offset * 3600);
   timeClient.update();
-  seconds = timeClient.getSeconds(); 
-  hours = timeClient.getHours();
-  minutes = timeClient.getMinutes();
-  Serial.printf("Updated to: %d:%2d:%2d\n", hours, minutes, seconds);
+  
+  time_seconds = timeClient.getSeconds(); 
+  time_hours = timeClient.getHours();
+  time_minutes = timeClient.getMinutes();
+  Serial.printf("Updated to: %d:%2d:%2d\n", time_hours, time_minutes, time_seconds);
 }
 
 void tick(void) 
 {
-  seconds++;
-  if (seconds > 59) 
+  time_seconds++;
+  if (time_seconds > 59) 
   {
     displayNeedsUpdated = true;
-    seconds = 0;
-    minutes += 1;
-    if (minutes > 59) 
+    time_seconds = 0;
+    time_minutes += 1;
+    if (time_minutes > 59) 
     {
-      minutes = 0;
-      hours += 1;
-      if (hours > 23) 
+      time_minutes = 0;
+      time_hours += 1;
+      if (time_hours > 23) 
       {
-        hours = 0;
+        time_hours = 0;
       }
     }
+    updateDisplay();
   }
-  //Serial.printf("tick %d:%d:%d\n", hours, minutes, seconds);
+
+  //check Alarms
+  {
+    if (alarm1_state == false 
+      && config.alarm1_hours == time_hours 
+      && config.alarm1_minutes == time_minutes)
+    {
+      amp_TurnOn();
+      alarm1_state = true;
+    }
+
+    if (alarm2_state == false
+      && config.alarm2_hours == time_hours
+      && config.alarm2_minutes == time_minutes)
+    {
+      amp_TurnOn();
+      alarm2_state = true;
+    }
+  }
+
+  if (config_changed)
+  {
+    config_save();
+  }
+  Serial.printf("tick %d:%d:%d\n", time_hours, time_minutes, time_seconds);
 }
 
 void updateDisplay()
@@ -168,18 +264,18 @@ void updateDisplay()
   displayNeedsUpdated = false;
   int indicators = indicators | 0x02; //make sure colon is on.
 
-  int displayValue = hours * 100 + minutes;
-  if (hours > 12)
+  int displayValue = time_hours * 100 + time_minutes;
+  if (time_hours > 12)
   {
     displayValue -= 1200;
   }
   // Handle hour 0 (midnight) being shown as 12.
-  else if (hours == 0)
+  else if (time_hours == 0)
   {
     displayValue += 1200;
   }
   
-  if (hours > 11)
+  if (time_hours > 11)
   {
     indicators = indicators | 0x04; //turn on PM indicator
   }
@@ -191,19 +287,19 @@ void updateDisplay()
   clockDisplay.print(displayValue, DEC); 
   clockDisplay.writeDigitRaw(2, indicators);
   clockDisplay.writeDisplay();
-  clockDisplay.setBrightness(brightness);
-  Serial.printf("Display: %3d\t%2d\n", displayValue,brightness);
+  clockDisplay.setBrightness(config.display_brightness);
+  Serial.printf("Display: %3d\t%2d\n", displayValue, config.display_brightness);
   
 }
 
 void loop()
 {
   //get the time from NTP every hour
-  if (minutes == 0)
+  if (time_minutes == 0)
   {
     updateTime(false);
   }
-  
+
   //update the display when needed;
   if (displayNeedsUpdated)
   {
@@ -214,7 +310,15 @@ void loop()
 
 }
 
-
+#define BUTTON_SNOOZE 0
+#define BUTTON_RESET 1
+#define BUTTON_RADIO 2
+#define MODE_ALARMONOFF 3
+#define MODE_RADIOTUNING 4
+#define MODE_ALARM2SET 5
+#define MODE_ALARM1SET 6
+#define MODE_TIME 7
+#define MODE_VOLUME 8
 #define MODE_BRIGHTNESS 9
 #define BUTTON_PLUS 10
 #define BUTTON_MINUS 11
@@ -222,67 +326,178 @@ void loop()
 void checkButtons()
 {
   currtouched = cap.touched();
-
+  
+  // Brightness
   if (currtouched & _BV(MODE_BRIGHTNESS))
   {
     if ((currtouched & _BV(BUTTON_PLUS)) && !(lasttouched & _BV(BUTTON_PLUS)))
     {
-      increaseBrightness();
+      setBrightness(1);
     }
     if ((currtouched & _BV(BUTTON_MINUS)) && !(lasttouched & _BV(BUTTON_MINUS)))
     {
-      decreaseBrightness();
+      setBrightness(1);
     }
   }
   
+  // Volume
+  if (currtouched & _BV(MODE_VOLUME))
+  {
+    if ((currtouched & _BV(BUTTON_PLUS)) && !(lasttouched & _BV(BUTTON_PLUS)))
+    {
+      setVolume(1);
+    }
+    if ((currtouched & _BV(BUTTON_MINUS)) && !(lasttouched & _BV(BUTTON_MINUS)))
+    {
+      setVolume(-1);
+    }
+  }
 
-  //for (uint8_t i = 0; i<12; i++) {
-  //  // it if *is* touched and *wasnt* touched before, alert!
-  //  if ((currtouched & _BV(i)) && !(lasttouched & _BV(i))) {
-  //    //Serial.print(i); Serial.println(" touched");
-  //    handleButton(i, true);
-  //  }
-  //  // if it *was* touched and now *isnt*, alert!
-  //  if (!(currtouched & _BV(i)) && (lasttouched & _BV(i))) {
-  //    handleButton(i, false);
-  //    //Serial.print(i); Serial.println(" released");
-  //  }
-  //}
+  // Time
+  if (currtouched & _BV(MODE_TIME))
+  {
+    if ((currtouched & _BV(BUTTON_PLUS)) && !(lasttouched & _BV(BUTTON_PLUS)))
+    {
+      setOffset(1);
+    }
+    if ((currtouched & _BV(BUTTON_MINUS)) && !(lasttouched & _BV(BUTTON_MINUS)))
+    {
+      setOffset(-1);
+    }
+  }
+
+  // Tuning
+  if (currtouched & _BV(MODE_RADIOTUNING))
+  {
+    if ((currtouched & _BV(BUTTON_PLUS)) && !(lasttouched & _BV(BUTTON_PLUS)))
+    {
+      setTuning(+2);
+    }
+    if ((currtouched & _BV(BUTTON_MINUS)) && !(lasttouched & _BV(BUTTON_MINUS)))
+    {
+      setTuning(-2);
+    }
+  }
+
+
+  // Alarm1
+  if (currtouched & _BV(MODE_ALARM1SET))
+  {
+    if ((currtouched & _BV(BUTTON_PLUS)) && !(lasttouched & _BV(BUTTON_PLUS)))
+    {
+      setAlarm(1, 1);
+    }
+    if ((currtouched & _BV(BUTTON_MINUS)) && !(lasttouched & _BV(BUTTON_MINUS)))
+    {
+      setAlarm(1, -1);
+    }
+  }
+
+
+  // Alarm2
+  if (currtouched & _BV(MODE_ALARM2SET))
+  {
+    if ((currtouched & _BV(BUTTON_PLUS)) && !(lasttouched & _BV(BUTTON_PLUS)))
+    {
+      setAlarm(2, 1);
+    }
+    if ((currtouched & _BV(BUTTON_MINUS)) && !(lasttouched & _BV(BUTTON_MINUS)))
+    {
+      setAlarm(2, -1);
+    }
+  }
 
   lasttouched = currtouched;
 }
 
 
-void increaseBrightness()
+
+void setBrightness(int amount)
 {
-  Serial.println("Button 11 Touched");
-  brightness++;
-  if (brightness > 15) { brightness = 15; }
-  clockDisplay.setBrightness(brightness);
+  config.display_brightness + amount;
+  if (config.display_brightness > 15) { config.display_brightness = 15; }
+  if (config.display_brightness < 0) { config.display_brightness = 0; }
+  clockDisplay.setBrightness(config.display_brightness);
+  
+  Serial.printf("Brightness: %d\n", config.display_brightness);
   displayNeedsUpdated = true;
+  config_changed = true;
 }
 
-void decreaseBrightness()
+void setOffset(int amount)
 {
-  Serial.println("Button 10 Touched");
-  brightness--;
-  if (brightness < 0) { brightness = 0; }
-  clockDisplay.setBrightness(brightness);
+  config.time_offset++;
+  if (config.time_offset > 14) { config.time_offset = 14; }
+  if (config.time_offset < -14) { config.time_offset = -14; }
+  updateTime(true);
   displayNeedsUpdated = true;
+  Serial.printf("Offset: %d\n", config.time_offset);
+  config_changed = true;
 }
 
-void handleButton(int button, bool state)
+void setVolume(int amount)
 {
-  if (state)
-  {
-   
-  }
-  else
-  {
-
-  }
-
+  config.amp_volume + amount;
+  if (config.amp_volume > 30) { config.amp_volume = 30; }
+  if (config.amp_volume < 0) { config.amp_volume = 0; }
+  
+  Serial.printf("AmpVolume: %d\n", config.amp_volume);
+  audioamp.setGain(config.amp_volume);
+  config_changed = true;
 }
+
+void setTuning(int amount)
+{
+  config.radio_channel += amount;
+  if (config.radio_channel > 1081) { config.radio_channel = 851; }
+  if (config.radio_channel < 851) { config.radio_channel = 1081; }
+  
+  Serial.printf("Channel: %d\n", config.radio_channel);
+  radio.setChannel(config.radio_channel);
+  config_changed = true;
+}
+
+
+void setAlarm(int alarm, int amount)
+{
+  if (alarm == 1)
+  {
+    config.alarm1_minutes + amount;
+    if (config.alarm1_minutes > 59)
+    {
+      config.alarm1_hours++;
+      config.alarm1_minutes = 0;
+    }
+
+    if (config.alarm1_minutes < 0)
+    {
+      config.alarm1_hours--;
+      config.alarm1_minutes = 59;
+    }
+    Serial.printf("Alarm1: %d:%d\n", config.alarm1_hours, config.alarm1_minutes);
+  }
+  else if (alarm == 2)
+  {
+    config.alarm2_minutes + amount;
+    if (config.alarm2_minutes > 59)
+    {
+      config.alarm2_hours++;
+      config.alarm2_minutes = 0;
+    }
+
+    if (config.alarm2_minutes < 0)
+    {
+      config.alarm2_hours--;
+      config.alarm2_minutes = 59;
+    }
+    Serial.printf("Alarm2: %d:%d\n", config.alarm2_hours, config.alarm2_minutes);
+  }
+
+  config_changed = true;
+}
+
+
+
 
 
 

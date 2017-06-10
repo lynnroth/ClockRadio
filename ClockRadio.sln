@@ -27,6 +27,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Adafruit_TPA2016_Library", 
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Radio", "..\libraries\Radio\Radio.vcxitems", "{848A3B23-2058-4931-8AA6-DD1C04FBC33A}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Adafruit_ESP8266", "..\libraries\Adafruit_ESP8266\Adafruit_ESP8266.vcxitems", "{FBE497CE-B613-4EEA-8B85-3B3DFF1A0EF5}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x86 = Debug|x86
